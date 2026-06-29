@@ -1,14 +1,10 @@
-name: Build Image
+name: Build & Deploy
 
 on:
   push:
-    tags:
-      - v*
-  pull_request:
-    types: [closed]
     branches:
       - main
-      - staging
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,71 +15,52 @@ concurrency:
 
 jobs:
   docker:
-    if: ${{ github.event_name == 'push' || github.event.pull_request.merged == true }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      PROJECT_NAME: smee-backend
-      DOCKERHUB_NAMESPACE: gremoryyx
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Determine image tags
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git fetch --tags --force
-
-          REF_TYPE="${GITHUB_REF_TYPE:-}"
-          REF_NAME="${GITHUB_REF_NAME:-}"
-
-          if [ "$REF_TYPE" = "tag" ] && [[ "$REF_NAME" == v* ]]; then
-            VERSION="${REF_NAME#v}"
-          else
-            TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-            if [ -z "$TAG" ]; then
-              SHORT_SHA="$(git rev-parse --short=7 HEAD)"
-              VERSION="0.0.0-$SHORT_SHA"
-            else
-              VERSION="${TAG#v}"
-            fi
-          fi
-
-          IMAGE="${DOCKERHUB_NAMESPACE}/${PROJECT_NAME}"
-
-          TAGS=""
-          if [[ "$VERSION" == *"-staging" ]]; then
-            STAGING_VERSION="${VERSION%-staging}"
-            TAGS="${IMAGE}:staging-${STAGING_VERSION},${IMAGE}:staging-latest"
-          else
-            TAGS="${IMAGE}:${VERSION},${IMAGE}:latest"
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: ${{ github.event_name == 'push' || github.event.pull_request.merged == true }}
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build (and push on tag pushes)
-        uses: docker/build-push-action@v7
+      - name: Build and push
+        uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name == 'push' || github.event.pull_request.merged == true }}
-          tags: ${{ steps.meta.outputs.tags }}
+          file: dockerfile
+          push: true
+          tags: bryann2kpro/smee-backend:dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 210.187.49.62
+          port: 6262
+          username: server
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: |
+            IMAGE="bryann2kpro/smee-backend:dev"
+            CONTAINER="smee-backend"
+
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+            docker pull "$IMAGE"
+            docker stop "$CONTAINER" 2>/dev/null || true
+            docker rm   "$CONTAINER" 2>/dev/null || true
+            docker run -d \
+              --name "$CONTAINER" \
+              --restart always \
+              -p "4770:7777" \
+              --env-file "/home/server/env/smee-backend.dev.env" \
+              "$IMAGE"
