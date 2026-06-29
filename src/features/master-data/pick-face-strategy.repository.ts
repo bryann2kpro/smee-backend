@@ -131,7 +131,10 @@ export class PickFaceStrategyRepositoryClass {
       const data = await paginatedQuery.query;
 
       logger.info('✅ [PickFaceStrategyRepository.getPickFaceStrategies] Pick face strategies fetched successfully');
-      return paginated;
+      return {
+        query: data,
+        pagination: paginatedQuery.pagination,
+      };
     } catch (error) {
       logger.error('❌ [PickFaceStrategyRepository.getPickFaceStrategies] Error:', error);
       throw error;
